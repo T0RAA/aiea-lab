@@ -25,9 +25,9 @@ import threading
 from skimage.transform import resize
 from PIL import Image
 
-import gym
-from gym import spaces
-from gym.utils import seeding
+import gymnasium as gym
+from gymnasium import spaces
+from gymnasium.utils import seeding
 import carla
 
 from gym_carla.envs.render import BirdeyeRender
@@ -151,7 +151,14 @@ class CarlaEnv(gym.Env):
     # Initialize the renderer
     self._init_renderer()
 
-  def reset(self):
+  def reset(self, seed=None, options=None):
+
+    super().reset(seed=seed)
+
+    for sensor in [self.collision_sensor, self.lidar_sensor, self.radar_sensor]:
+        if sensor is not None and sensor.is_alive:
+            sensor.destroy()
+
     # Clear sensor objects
     self.collision_sensor = None
     self.lidar_sensor = None
@@ -230,8 +237,8 @@ class CarlaEnv(gym.Env):
     self.radar_list = o3d.geometry.PointCloud()
     self.radar_sensor.listen(lambda data: get_radar_data(data, self.radar_list))
     def get_radar_data(data, point_list):
-      COOL_RANGE = np.linspace[0.0, 1.0, VIRIDIS.shape[0]]
-      COOL = np.array(cm.get_cmap('winter')[COOL_RANGE])
+      COOL_RANGE = np.linspace(0.0, 1.0, 256)
+      COOL = np.array(cm.get_cmap('winter')(COOL_RANGE))
       COOL = COOL[:,:3]
       radar_data = np.zeros((len(data), 4))
 
@@ -242,6 +249,7 @@ class CarlaEnv(gym.Env):
 
         radar_data[i, :] = [x, y, z, detection.velocity]
       intensity = np.abs(radar_data[:, -1])
+      intensity = np.clip(intensity, 1e-6, None)
       intensity_col = 1.0 - np.log(intensity) / np.log(np.exp(-0.004 * 100))
       int_color = np.c_[
         np.interp(intensity_col, COOL_RANGE, COOL[:, 0]),
@@ -298,16 +306,7 @@ class CarlaEnv(gym.Env):
     thread_open3d = threading.Thread(target=run_open3d)
     thread_open3d.start()
 
-
-    # Add camera sensors
-    self.camera_sensor = self.world.spawn_actor(self.camera_bp, self.camera_trans, attach_to=self.ego)
-    self.camera_sensor.listen(lambda data: get_camera_img(data))
-    self.camera_sensor2 = self.world.spawn_actor(self.camera_bp, self.camera_trans2, attach_to=self.ego)
-    self.camera_sensor2.listen(lambda data: get_camera_img2(data))
-    self.camera_sensor3 = self.world.spawn_actor(self.camera_bp, self.camera_trans3, attach_to=self.ego)
-    self.camera_sensor3.listen(lambda data: get_camera_img3(data))
-    self.camera_sensor4 = self.world.spawn_actor(self.camera_bp, self.camera_trans4, attach_to=self.ego)
-    self.camera_sensor4.listen(lambda data: get_camera_img4(data))
+    
 
     def get_camera_img(data):
       array = np.frombuffer(data.raw_data, dtype = np.dtype("uint8"))
@@ -316,12 +315,16 @@ class CarlaEnv(gym.Env):
       array = array[:, :, ::-1]
       self.camera_img[0] = array
 
+    _fn = get_camera_img
+
     def get_camera_img2(data):
       array = np.frombuffer(data.raw_data, dtype = np.dtype("uint8"))
       array = np.reshape(array, (data.height, data.width, 4))
       array = array[:, :, :3]
       array = array[:, :, ::-1]
       self.camera_img[1] = array
+   
+    _fn = get_camera_img2
 
     def get_camera_img3(data):
       array = np.frombuffer(data.raw_data, dtype = np.dtype("uint8"))
@@ -329,6 +332,8 @@ class CarlaEnv(gym.Env):
       array = array[:, :, :3]
       array = array[:, :, ::-1]
       self.camera_img[2] = array
+
+    _fn = get_camera_img3
 
     def get_camera_img4(data):
       array = np.frombuffer(data.raw_data, dtype = np.dtype("uint8"))
@@ -349,7 +354,21 @@ class CarlaEnv(gym.Env):
 
     # Set ego information for render
     self.birdeye_render.set_hero(self.ego, self.ego.id)
-    return self._get_obs()
+    return self._get_obs(), {}
+  
+    _fn = get_camera_img4
+
+
+     # Add camera sensors
+    self.camera_sensor = self.world.spawn_actor(self.camera_bp, self.camera_trans, attach_to=self.ego)
+    self.camera_sensor.listen(lambda data: _fn(data))
+    self.camera_sensor2 = self.world.spawn_actor(self.camera_bp, self.camera_trans2, attach_to=self.ego)
+    self.camera_sensor2.listen(lambda data: _fn(data))
+    self.camera_sensor3 = self.world.spawn_actor(self.camera_bp, self.camera_trans3, attach_to=self.ego)
+    self.camera_sensor3.listen(lambda data: _fn(data))
+    self.camera_sensor4 = self.world.spawn_actor(self.camera_bp, self.camera_trans4, attach_to=self.ego)
+    self.camera_sensor4.listen(lambda data: _fn(data))
+
 
   def step(self, action):
     # Calculate acceleration and steering
@@ -420,7 +439,7 @@ class CarlaEnv(gym.Env):
     self.time_step += 1
     self.total_step += 1
 
-    return (self._get_obs(), self._get_reward(), self._terminal(), copy.deepcopy(info))
+    return (self._get_obs(), self._get_reward(), self._terminal(), False, copy.deepcopy(info))
 
   def seed(self, seed=None):
     self.np_random, seed = seeding.np_random(seed)
